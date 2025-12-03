@@ -45,27 +45,27 @@ It posts a new puzzle every day, lets people submit answers via DMs, scores them
 git clone https://github.com/kryoton98/Discord-Problems-BOT.git
 cd Discord-Problems-BOT
 
-text
+
 
 ### 2. (Optional) Create a virtual environment
 
 python -m venv .venv
 source .venv/bin/activate # Windows: .venv\Scripts\activate
 
-text
+
 
 ### 3. Install dependencies
 
 pip install -r requirements.txt
 
-text
+
 
 `requirements.txt` should contain at least:
 
 discord.py==2.6.4
 python-dotenv==1.2.1
 
-text
+
 
 ### 4. Create a Discord application and bot
 
@@ -80,7 +80,7 @@ Create a `.env` file next to `bot.py`:
 
 echo "DISCORD_TOKEN=your_bot_token_here" > .env
 
-text
+
 
 The bot reads this variable at startup.[file:345]
 
@@ -91,7 +91,7 @@ In `bot.py`, set these constants to your server’s IDs:
 AUTO_GUILD_ID = 123456789012345678 # your server ID
 AUTO_CHANNEL_ID = 234567890123456789 # channel for daily puzzles
 
-text
+
 
 The bot will then post the next unopened puzzle every day at **12:00 PM Asia/Kolkata (IST)**.[file:345]
 
@@ -99,7 +99,7 @@ The bot will then post the next unopened puzzle every day at **12:00 PM Asia/Kol
 
 python bot.py
 
-text
+
 
 On first run, `quiz_bot.db` is created and all required tables are initialized.[file:345]
 
@@ -123,7 +123,7 @@ Players DM the bot:
 example:
 2089 42
 
-text
+
 
 The bot:
 
@@ -139,7 +139,7 @@ BASE_POINTS = 1000
 DECAY_INTERVAL_SECONDS = 120 # 1 point lost every 2 minutes
 WRONG_PENALTY = 50 # points deducted per wrong answer
 
-text
+
 
 - **Correct answer:**  
   \( \text{points} = \max(0,\; \text{BASE\_POINTS} - \lfloor t / \text{DECAY\_INTERVAL\_SECONDS} \rfloor) \),  

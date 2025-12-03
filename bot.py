@@ -499,10 +499,45 @@ async def daily_post_task():
 
     code = get_latest_problem_code()
     if code is None:
-        logger.warning("daily_post_task: no (unopened) problems in DB, skipping.")
+        # No unopened problems left – post a fallback message instead of silently skipping
+        logger.warning(
+            "daily_post_task: no (unopened) problems in DB, posting exhaustion message."
+        )
+
+        # Resolve guild and channel just like for a normal post
+        guild = None
+        if AUTO_GUILD_ID:
+            guild = bot.get_guild(AUTO_GUILD_ID)
+        elif bot.guilds:
+            guild = bot.guilds[0]
+
+        if not guild:
+            logger.warning("daily_post_task: bot is not in the target guild.")
+            return
+
+        channel: Optional[discord.TextChannel] = None
+        if AUTO_CHANNEL_ID:
+            ch = guild.get_channel(AUTO_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                channel = ch
+        else:
+            for chan in guild.text_channels:
+                if chan.permissions_for(guild.me).send_messages:
+                    channel = chan
+                    break
+
+        if channel is None:
+            logger.warning("daily_post_task: no writable text channel found.")
+            return
+
+        await channel.send(
+            "😔 **No new puzzle today.**\n"
+            "The problem set is currently exhausted.\n"
+            "Curators, please create new problems with `/create_problem`!"
+        )
         return
 
-    # Resolve guild and channel
+    # Resolve guild and channel for normal auto‑post
     guild = None
     if AUTO_GUILD_ID:
         guild = bot.get_guild(AUTO_GUILD_ID)
@@ -533,6 +568,7 @@ async def daily_post_task():
         logger.info(f"Auto-posted daily problem {code} in #{channel.name}")
     except Exception as e:
         logger.error(f"Error in daily_post_task: {e}")
+
 
 # ============================================================================
 # DM MESSAGE HANDLER (answers + point computation + penalties)

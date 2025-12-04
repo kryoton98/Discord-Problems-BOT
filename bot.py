@@ -33,13 +33,15 @@ IST = ZoneInfo("Asia/Kolkata")  # India Standard Time
 DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 
 # Where the automatic daily post goes.
-# Fill these with your actual IDs (right‑click server/channel → "Copy ID").
+# Fill these with your actual IDs (right-click server/channel -> "Copy ID").
 AUTO_GUILD_ID = 0       # e.g. 123456789012345678
 AUTO_CHANNEL_ID = 0     # e.g. 234567890123456789
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes
 WRONG_PENALTY = 50               # points deducted per wrong answer
+AUTHOR_BONUS_PER_SOLVE = 20      # points given to author per correct solve
+MAX_DECAY_HOURS = 4              # Decay stops after 4 hours
 
 # ============================================================================
 # DATABASE SETUP
@@ -84,7 +86,7 @@ def init_db():
     )"""
     )
 
-    # Ratings table: 1 row per (user, problem); 1–5 stars
+    # Ratings table: 1 row per (user, problem); 1-5 stars
     c.execute(
         """CREATE TABLE IF NOT EXISTS problem_ratings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -479,7 +481,7 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
         value=(
             f"⏰ Open for 24 hours\n"
             f"Base points: {BASE_POINTS}\n"
-            f"Time decay: −1 point every 2 minutes\n"
+            f"Time decay: −1 point every 2 minutes (Caps at {MAX_DECAY_HOURS} hours)\n"
             f"Wrong answer penalty: −{WRONG_PENALTY} points per attempt\n"
             f"DM me: `{code} <answer>`"
         ),
@@ -569,7 +571,6 @@ async def daily_post_task():
     except Exception as e:
         logger.error(f"Error in daily_post_task: {e}")
 
-
 # ============================================================================
 # DM MESSAGE HANDLER (answers + point computation + penalties)
 # ============================================================================
@@ -605,6 +606,15 @@ async def on_message(message: discord.Message):
 
             problem_id = prob[0]
 
+            # 12 is the index for author_id in your DB schema
+            author_id = prob[12]
+
+            # Prevent author from answering their own problem
+            if author_id == str(message.author.id):
+                await message.author.send("❌ You created this problem! You cannot submit an answer for points.")
+                await bot.process_commands(message)
+                return
+
             # Check if problem is open
             if not check_problem_open(problem_code):
                 await message.author.send(
@@ -639,7 +649,15 @@ async def on_message(message: discord.Message):
                     opens_at_dt = now
 
                 elapsed_seconds = (now - opens_at_dt).total_seconds()
-                decay_steps = int(max(0, elapsed_seconds) // DECAY_INTERVAL_SECONDS)
+                
+                # CAP DECAY at 4 hours
+                max_decay_seconds = MAX_DECAY_HOURS * 3600
+                if elapsed_seconds > max_decay_seconds:
+                    effective_seconds = max_decay_seconds
+                else:
+                    effective_seconds = elapsed_seconds
+
+                decay_steps = int(max(0, effective_seconds) // DECAY_INTERVAL_SECONDS)
                 points = max(0, BASE_POINTS - decay_steps)
             else:
                 # Penalty for wrong attempt
@@ -649,6 +667,15 @@ async def on_message(message: discord.Message):
             submit_answer(
                 str(message.author.id), problem_id, user_answer, is_correct, points
             )
+
+            # If correct, AWARD BONUS TO AUTHOR
+            if is_correct and author_id:
+                 # Give author bonus points
+                 # We record this as a special "bonus" submission so it shows up in their total score
+                 submit_answer(
+                    author_id, problem_id, "AUTHOR_BONUS", 1, AUTHOR_BONUS_PER_SOLVE
+                 )
+
             # Calculate total points for this user on this problem
             user_id = str(message.author.id)
             conn = sqlite3.connect(DB_NAME)

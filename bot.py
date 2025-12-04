@@ -118,6 +118,16 @@ def init_db():
     )"""
     )
 
+    # --- NEW: Users table for streaks ---
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        current_streak INTEGER DEFAULT 0,
+        max_streak INTEGER DEFAULT 0,
+        last_solve_date TEXT
+    )"""
+    )
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -435,6 +445,84 @@ def unscore_submissions(problem_id: int, user_id: Optional[str] = None) -> int:
     conn.close()
     return affected
 
+# --- NEW: STREAK LOGIC HELPERS ---
+
+def update_streak(user_id: str):
+    """Updates current/max streak based on IST date."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Get current data
+    c.execute("SELECT current_streak, max_streak, last_solve_date FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    
+    curr, maxx, last = 0, 0, None
+    if row:
+        curr, maxx, last = row
+    
+    now_ist = datetime.now(IST)
+    today = now_ist.strftime("%Y-%m-%d")
+    yesterday = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    if last == today:
+        pass # Already solved today, streak maintains
+    elif last == yesterday:
+        curr += 1
+    else:
+        curr = 1 # Reset or start new
+        
+    if curr > maxx:
+        maxx = curr
+        
+    c.execute("""
+        INSERT INTO users (user_id, current_streak, max_streak, last_solve_date)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            current_streak = excluded.current_streak,
+            max_streak = excluded.max_streak,
+            last_solve_date = excluded.last_solve_date
+    """, (user_id, curr, maxx, today))
+    
+    conn.commit()
+    conn.close()
+    return curr, maxx
+
+def get_user_stats(user_id: str):
+    """Returns (Rank, Total Points, Current Streak, Max Streak)."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Calculate Rank & Points dynamically
+    c.execute("""
+        SELECT user_id, SUM(points) as total 
+        FROM submissions 
+        GROUP BY user_id 
+        ORDER BY total DESC
+    """)
+    all_scores = c.fetchall()
+    
+    rank = 0
+    points = 0
+    found = False
+    
+    for idx, (uid, pts) in enumerate(all_scores, 1):
+        if uid == user_id:
+            rank = idx
+            points = pts
+            found = True
+            break
+            
+    # Get Streak data
+    c.execute("SELECT current_streak, max_streak FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    curr, maxx = (row if row else (0, 0))
+    
+    conn.close()
+    
+    if not found:
+        return None
+    return (rank, points, curr, maxx)
+
 # ============================================================================
 # BOT SETUP
 # ============================================================================
@@ -749,13 +837,17 @@ async def on_message(message: discord.Message):
             problem_points_total = row[0] if row and row[0] is not None else 0
 
             if is_correct:
+                # --- STREAK UPDATE ---
+                curr, maxx = update_streak(str(message.author.id))
                 total_solves = get_user_total_solves(user_id)
+                
                 await message.author.send(
                     f"✅ **Correct!**\n"
                     f"Your solve for Day `{problem_code}` has been recorded.\n"
                     f"🏅 This correct submission is worth **{points}** points.\n"
                     f"📊 Your total for this problem (after penalties): "
                     f"**{problem_points_total}** points.\n\n"
+                    f"🔥 **Streak:** {curr} (Max: {maxx})\n"
                     f"📊 Total solved: **{total_solves}** problem(s)\n\n"
                     f"⭐ If you want, rate this problem in the server with:\n"
                     f"`/rate_problem code:{problem_code} rating:1-5`"
@@ -910,7 +1002,7 @@ async def create_problem(
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
 
 # ============================================================================
-# CURATOR COMMANDS (manual posting, listing, unscoring)
+# COMMANDS
 # ============================================================================
 
 @bot.tree.command(name="post_today", description="Post today's problem (Curator only)")
@@ -1286,9 +1378,30 @@ async def curator_leaderboard(interaction: discord.Interaction):
         logger.error(f"Error in curator_leaderboard: {e}")
         await interaction.followup.send("⚠️ An error occurred.")
 
-# ============================================================================
-# MAIN
-# ============================================================================
+# --- NEW: MY STATS COMMAND ---
+
+@bot.tree.command(name="my_stats", description="View your rank, points, and streaks")
+async def my_stats(interaction: discord.Interaction):
+    """Show personal stats including rank and streak."""
+    await interaction.response.defer()
+    stats = get_user_stats(str(interaction.user.id))
+    
+    if not stats:
+        await interaction.followup.send("📭 You haven't solved any problems yet.")
+        return
+        
+    rank, points, curr, maxx = stats
+    
+    embed = discord.Embed(
+        title=f"📊 Stats for {interaction.user.display_name}", 
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="🏆 Overall Rank", value=f"#{rank}", inline=True)
+    embed.add_field(name="💰 Total Points", value=str(points), inline=True)
+    embed.add_field(name="🔥 Current Streak", value=str(curr), inline=True)
+    embed.add_field(name="⚡ Max Streak", value=str(maxx), inline=True)
+    
+    await interaction.followup.send(embed=embed)
 
 if __name__ == "__main__":
     logger.info(">>> STARTING Problems BOT v0.5 (Verifier+Pagination) <<<")

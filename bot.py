@@ -51,11 +51,11 @@ MAX_DECAY_HOURS = 4              # Decay stops after 4 hours
 # ============================================================================
 
 def init_db():
-    """Initialize database with all required tables."""
+    """Initialize database with all required tables and a default System problem."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    # Problems table (includes author_id, image_url, editorial_url, review_status)
+    # Problems table
     c.execute(
         """CREATE TABLE IF NOT EXISTS problems (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,21 +77,13 @@ def init_db():
     )"""
     )
     
-    # Simple migration to add editorial_url if it doesn't exist
-    try:
-        c.execute("ALTER TABLE problems ADD COLUMN editorial_url TEXT")
-    except sqlite3.OperationalError:
-        # Column likely already exists
-        pass
+    # Migrations for older DBs
+    try: c.execute("ALTER TABLE problems ADD COLUMN editorial_url TEXT")
+    except: pass
+    try: c.execute("ALTER TABLE problems ADD COLUMN review_status TEXT DEFAULT 'pending'")
+    except: pass
 
-    # Simple migration to add review_status if it doesn't exist
-    try:
-        c.execute("ALTER TABLE problems ADD COLUMN review_status TEXT DEFAULT 'pending'")
-    except sqlite3.OperationalError:
-        # Column likely already exists
-        pass
-
-    # Submissions table (includes points; can be positive or negative)
+    # Submissions table
     c.execute(
         """CREATE TABLE IF NOT EXISTS submissions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +97,7 @@ def init_db():
     )"""
     )
 
-    # Ratings table: 1 row per (user, problem); 1-5 stars
+    # Ratings table
     c.execute(
         """CREATE TABLE IF NOT EXISTS problem_ratings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +110,7 @@ def init_db():
     )"""
     )
 
-    # --- NEW: Users table for streaks ---
+    # Users table for streaks
     c.execute(
         """CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
@@ -128,9 +120,22 @@ def init_db():
     )"""
     )
 
+    # --- NEW: Insert System Dummy Problem (ID 0) ---
+    # We use INSERT OR IGNORE to make sure it only happens once.
+    # Note: AUTOINCREMENT usually starts at 1, so we explicitly set ID=0.
+    try:
+        c.execute(
+            """INSERT OR IGNORE INTO problems 
+            (id, code, statement, topics, difficulty, setter, source, answer, review_status)
+            VALUES (0, 'SYSTEM', 'Points Adjustment Placeholder', 'System', '0', 'System', 'System', 'SYSTEM', 'approved')"""
+        )
+    except Exception as e:
+        logger.warning(f"Could not insert system problem: {e}")
+
     conn.commit()
     conn.close()
-    logger.info("Database initialized")
+    logger.info("Database initialized (System Problem ID 0 check complete)")
+
 
 # ============================================================================
 # DATABASE HELPER FUNCTIONS
@@ -1178,34 +1183,29 @@ async def grant_points(interaction: discord.Interaction, user: discord.User, poi
 
     await interaction.response.defer(ephemeral=True)
 
-    # We need a valid problem_id for the foreign key constraint.
-    # We will use the most recent problem ID, or 1.
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Find any valid problem ID to attach this "bonus" to
-    c.execute("SELECT id FROM problems LIMIT 1")
-    row = c.fetchone()
+    # We link to Problem ID 0 (The System Problem)
+    # This avoids the need to search for a random problem ID.
+    problem_id = 0
     
-    if not row:
-        conn.close()
-        await interaction.followup.send("❌ No problems exist in DB yet. Create a problem first to attach points to.")
-        return
+    try:
+        c.execute(
+            """INSERT INTO submissions (user_id, problem_id, answer, is_correct, points, submitted_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (str(user.id), problem_id, f"MANUAL: {reason}", 1, points)
+        )
+        conn.commit()
+        msg = f"✅ **{'Added' if points > 0 else 'Removed'} {abs(points)} points** to {user.mention}.\nReason: {reason}"
+    except sqlite3.IntegrityError:
+        # Fallback if ID 0 somehow doesn't exist (e.g. old DB without re-init)
+        msg = "❌ Database Error: System Problem ID 0 not found. Restart bot to fix."
+    except Exception as e:
+        msg = f"❌ Error: {e}"
         
-    problem_id = row[0]
-    
-    # Insert the manual adjustment
-    # We use "MANUAL: <reason>" as the answer string so we can identify it later
-    c.execute(
-        """INSERT INTO submissions (user_id, problem_id, answer, is_correct, points, submitted_at)
-           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-        (str(user.id), problem_id, f"MANUAL: {reason}", 1, points)
-    )
-    conn.commit()
     conn.close()
-
-    action = "Added" if points > 0 else "Removed"
-    await interaction.followup.send(f"✅ **{action} {abs(points)} points** to {user.mention}.\nReason: {reason}")
+    await interaction.followup.send(msg)
 
 
 @bot.tree.command(name="list_problems", description="List all problems (paginated)")

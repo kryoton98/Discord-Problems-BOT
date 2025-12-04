@@ -1,31 +1,31 @@
 # Problems BOT
 
 Problems BOT is a Discord bot for daily puzzle solving.  
-It posts a new puzzle every day, lets people submit answers via DMs, scores them with time‑decay and wrong‑answer penalties, and maintains leaderboards for both solvers and problem creators.[file:345]
+It posts a new puzzle every day, lets people submit answers via DMs, scores them with time‑decay and wrong‑answer penalties, and maintains leaderboards for both solvers and problem creators.
 
 ---
 
 ## Features
 
 - **Daily puzzle at 12:00 PM IST**  
-  Automatically posts one puzzle per day in your chosen channel, with a 24‑hour window for submissions.[file:345]
+  Automatically posts one puzzle per day in your chosen channel, with a 24‑hour window for submissions.
 
 - **Answer in direct messages**  
-  Players DM the bot in the format `code answer` (for example, `2089 42`) so channels stay clean.[file:345]
+  Players DM the bot in the format `code answer` (for example, `2089 42`) so channels stay clean.
 
 - **Time‑decayed scoring**  
-  Each puzzle starts at 1000 points; 1 point is lost every 2 minutes after the puzzle opens.[file:345]
+  Each puzzle starts at 1000 points; 1 point is lost every 2 minutes after the puzzle opens.
 
 - **Wrong‑answer penalty**  
-  Every incorrect attempt costs 50 points, encouraging both speed and accuracy.[file:345]
+  Every incorrect attempt costs 50 points, encouraging both speed and accuracy.
 
 - **Leaderboards**  
   - Overall solver leaderboard by total points and number of puzzles solved.  
   - “Today” leaderboard for the currently active puzzle only.  
-  - Curator leaderboard showing who creates puzzles and how well they’re rated.[file:345]
+  - Curator leaderboard showing who creates puzzles and how well they’re rated.
 
 - **Curator tools**  
-  Curators can create puzzles, post the daily puzzle manually, reset scores for a buggy puzzle, and view creator stats.[file:345]
+  Curators can create puzzles, post the daily puzzle manually, reset scores for a buggy puzzle, and view creator stats.
 
 ---
 
@@ -34,7 +34,7 @@ It posts a new puzzle every day, lets people submit answers via DMs, scores them
 - **Language:** Python 3.9+  
 - **Discord library:** `discord.py` (slash commands + DMs)  
 - **Database:** SQLite (`quiz_bot.db`)  
-- **Config:** `.env` via `python-dotenv`[file:345]
+- **Config:** `.env` via `python-dotenv`
 
 ---
 
@@ -82,7 +82,7 @@ echo "DISCORD_TOKEN=your_bot_token_here" > .env
 
 
 
-The bot reads this variable at startup.[file:345]
+The bot reads this variable at startup.
 
 ### 6. Configure guild and channel for daily puzzles
 
@@ -93,7 +93,7 @@ AUTO_CHANNEL_ID = 234567890123456789 # channel for daily puzzles
 
 
 
-The bot will then post the next unopened puzzle every day at **12:00 PM Asia/Kolkata (IST)**.[file:345]
+The bot will then post the next unopened puzzle every day at **12:00 PM Asia/Kolkata (IST)**.
 
 ### 7. Run the bot
 
@@ -101,7 +101,7 @@ python bot.py
 
 
 
-On first run, `quiz_bot.db` is created and all required tables are initialized.[file:345]
+On first run, `quiz_bot.db` is created and all required tables are initialized.
 
 ---
 
@@ -112,7 +112,7 @@ On first run, `quiz_bot.db` is created and all required tables are initialized.[
 1. Curators create puzzles and add them to the database.  
 2. At 12:00 PM IST, the bot selects the oldest unopened puzzle and posts it to the configured channel.  
 3. The puzzle is marked active for 24 hours; players can submit answers during this window.  
-4. After 24 hours, the puzzle closes automatically.[file:345]
+4. After 24 hours, the puzzle closes automatically.
 
 ### Answer format
 
@@ -129,7 +129,7 @@ The bot:
 
 - checks that the code exists and is currently open,  
 - compares the answer against the stored solution (case‑insensitive string match),  
-- records a row in `submissions` with `is_correct` and `points` for every attempt.[file:345]
+- records a row in `submissions` with `is_correct` and `points` for every attempt.
 
 ### Scoring model
 
@@ -148,12 +148,12 @@ WRONG_PENALTY = 50 # points deducted per wrong answer
 - **Wrong answer:**  
   \( \text{points} = -\text{WRONG\_PENALTY} \).
 
-Every attempt (correct or wrong) is stored; total score for a user is the sum of all their `points`.[file:345]
+Every attempt (correct or wrong) is stored; total score for a user is the sum of all their `points`.
 
 Leaderboards:
 
 - **Overall:** sum of points across all puzzles, plus count of distinct puzzles with a correct submission.  
-- **Today:** sum of points on the active puzzle, including penalties, but only shows users who have at least one correct submission on that puzzle.[file:345]
+- **Today:** sum of points on the active puzzle, including penalties, but only shows users who have at least one correct submission on that puzzle.
 
 ---
 
@@ -162,39 +162,38 @@ Leaderboards:
 ### Solver commands
 
 - `/leaderboard overall`  
-  Show global solver leaderboard by total points and number of puzzles solved.[file:345]
+  Show global solver leaderboard by total points and number of puzzles solved.
 
 - `/leaderboard today`  
-  Show today’s leaderboard for the currently active puzzle.[file:345]
+  Show today’s leaderboard for the currently active puzzle.
 
 - `/rate_problem code:<code> rating:1-5`  
-  Rate a puzzle you have solved correctly (1–5 stars).[file:345]
-
+  Rate a puzzle you have solved correctly (1–5 stars).
 ### Curator commands
 
 Curator‑only commands require the `Curator` role in your Discord server.
 
 - `/create_problem`  
   Create a new puzzle with statement, topics/tags, difficulty (1–5), answer, and optional image.  
-  Limited to **1 puzzle per user per 24 hours**.[file:345]
+  Limited to **1 puzzle per user per 24 hours**.
 
 - `/post_today code:<code>`  
-  Manually post a puzzle into the current channel and mark it active for 24 hours.[file:345]
+  Manually post a puzzle into the current channel and mark it active for 24 hours.
 
 - `/unscore_problem code:<code> user:[optional]`  
-  Clear scores and correct flags for all submissions on that puzzle, or just for a specific user.[file:345]
+  Clear scores and correct flags for all submissions on that puzzle, or just for a specific user.
 
 - `/list_problems`  
-  List all puzzles with their code, difficulty, and whether they are active.[file:345]
+  List all puzzles with their code, difficulty, and whether they are active.
 
 - `/curator_leaderboard`  
-  Show puzzle creators ordered by how many puzzles they have in the system and their average rating.[file:345]
+  Show puzzle creators ordered by how many puzzles they have in the system and their average rating.
 
 ---
 
 ## Project Structure
 
-- `bot.py` – main Discord bot; database setup, DM logic, scoring, and slash commands.[file:345]  
+- `bot.py` – main Discord bot; database setup, DM logic, scoring, and slash commands.
 - `quiz_bot.db` – SQLite database created at runtime.  
 - `requirements.txt` – Python dependencies.  
 - `install-guide.pdf` – optional detailed installation guide, linked from the front‑end site.  

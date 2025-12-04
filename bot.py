@@ -54,7 +54,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    # Problems table (includes author_id and image_url)
+    # Problems table (includes author_id, image_url, and NOW editorial_url)
     c.execute(
         """CREATE TABLE IF NOT EXISTS problems (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,9 +70,17 @@ def init_db():
         is_active INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         author_id TEXT,
-        image_url TEXT
+        image_url TEXT,
+        editorial_url TEXT
     )"""
     )
+    
+    # Simple migration to add editorial_url if it doesn't exist
+    try:
+        c.execute("ALTER TABLE problems ADD COLUMN editorial_url TEXT")
+    except sqlite3.OperationalError:
+        # Column likely already exists
+        pass
 
     # Submissions table (includes points; can be positive or negative)
     c.execute(
@@ -277,6 +285,7 @@ def add_problem(
     answer: str,
     author_id: Optional[str],
     image_url: Optional[str],
+    editorial_url: Optional[str],  # NEW ARGUMENT
 ) -> int:
     """Add a new problem row."""
     conn = sqlite3.connect(DB_NAME)
@@ -284,9 +293,9 @@ def add_problem(
     c.execute(
         """INSERT INTO problems
            (code, statement, topics, difficulty, setter, source, answer,
-            author_id, image_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (code, statement, topics, difficulty, setter, source, answer, author_id, image_url),
+            author_id, image_url, editorial_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (code, statement, topics, difficulty, setter, source, answer, author_id, image_url, editorial_url),
     )
     conn.commit()
     problem_id = c.lastrowid
@@ -438,10 +447,11 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
     # Activate problem (sets opens_at/closes_at)
     activate_problem(code)
 
+    # Note: The prob tuple now includes editorial_url at the end (index 14) due to schema change
     (
         problem_id, _code, statement, topics, difficulty, setter, 
         source, answer, opens_at, closes_at, _is_active, _created_at, 
-        author_id, image_url
+        author_id, image_url, _editorial_url
     ) = prob
 
     embed1 = discord.Embed(
@@ -454,11 +464,19 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
 
     embed2 = discord.Embed(title="Problem Info", color=discord.Color.dark_gray())
     embed2.add_field(name="Topics", value=topics or "N/A", inline=False)
-    embed2.add_field(name="Difficulty", value=str(difficulty) if difficulty else "N/A", inline=True)
+    embed2.add_field(
+        name="Difficulty",
+        value=str(difficulty) if difficulty else "N/A",
+        inline=True,
+    )
     embed2.add_field(name="Setter", value=setter or "N/A", inline=True)
     embed2.add_field(name="Source", value=source or "N/A", inline=False)
     if author_id:
-        embed2.add_field(name="Author ID", value=author_id, inline=False)
+        embed2.add_field(
+            name="Author ID",
+            value=author_id,
+            inline=False,
+        )
     embed2.add_field(
         name="Window",
         value=(
@@ -471,11 +489,7 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
         inline=False,
     )
 
-    # Simply use the @here string
-    content = "@here 🔔 **New Daily Problem!**"
-
-    await channel.send(content=content, embeds=[embed1, embed2])
-
+    await channel.send(embeds=[embed1, embed2])
 
 # ============================================================================
 # SCHEDULED DAILY TASK (12:00 PM IST)
@@ -486,25 +500,20 @@ async def daily_post_task():
     """Automatically post the daily problem at 12:00 PM IST."""
     await bot.wait_until_ready()
 
-    code = get_latest_problem_code()
-    if code is None:
-        # No unopened problems left – post a fallback message instead of silently skipping
-        logger.warning(
-            "daily_post_task: no (unopened) problems in DB, posting exhaustion message."
-        )
+    # --------------------------------------------------------------------
+    # 1. POST EDITORIAL FOR PREVIOUS PROBLEM
+    # --------------------------------------------------------------------
+    prev_active = get_active_problem()
+    
+    # Resolve channel first
+    guild = None
+    if AUTO_GUILD_ID:
+        guild = bot.get_guild(AUTO_GUILD_ID)
+    elif bot.guilds:
+        guild = bot.guilds[0]
 
-        # Resolve guild and channel just like for a normal post
-        guild = None
-        if AUTO_GUILD_ID:
-            guild = bot.get_guild(AUTO_GUILD_ID)
-        elif bot.guilds:
-            guild = bot.guilds[0]
-
-        if not guild:
-            logger.warning("daily_post_task: bot is not in the target guild.")
-            return
-
-        channel: Optional[discord.TextChannel] = None
+    channel = None
+    if guild:
         if AUTO_CHANNEL_ID:
             ch = guild.get_channel(AUTO_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
@@ -515,40 +524,43 @@ async def daily_post_task():
                     channel = chan
                     break
 
-        if channel is None:
-            logger.warning("daily_post_task: no writable text channel found.")
-            return
-
-        await channel.send(
-            "😔 **No new puzzle today.**\n"
-            "The problem set is currently exhausted.\n"
-            "Curators, please create new problems with `/create_problem`!"
+    if channel and prev_active:
+        # prev_active is likely the problem we are about to close.
+        # It has opens_at ~24h ago.
+        prev_code = prev_active[1]
+        prev_ans = prev_active[7]
+        prev_editorial = prev_active[14]  # Index 14 is editorial_url in our new schema
+        
+        editorial_embed = discord.Embed(
+            title=f"🛑 Day {prev_code} Closed", 
+            color=discord.Color.red()
         )
+        editorial_embed.add_field(name="Official Answer", value=f"||{prev_ans}||", inline=False)
+        
+        if prev_editorial:
+            editorial_embed.add_field(name="Editorial / Solution", value=prev_editorial, inline=False)
+        else:
+            editorial_embed.set_footer(text="No editorial provided for this problem.")
+            
+        await channel.send(embed=editorial_embed)
+
+    # --------------------------------------------------------------------
+    # 2. POST NEW PROBLEM (Existing Logic)
+    # --------------------------------------------------------------------
+    code = get_latest_problem_code()
+    if code is None:
+        logger.warning(
+            "daily_post_task: no (unopened) problems in DB, posting exhaustion message."
+        )
+        if channel:
+             await channel.send(
+                "😔 **No new puzzle today.**\n"
+                "The problem set is currently exhausted.\n"
+                "Curators, please create new problems with `/create_problem`!"
+            )
         return
 
-    # Resolve guild and channel for normal auto‑post
-    guild = None
-    if AUTO_GUILD_ID:
-        guild = bot.get_guild(AUTO_GUILD_ID)
-    elif bot.guilds:
-        guild = bot.guilds[0]
-
-    if not guild:
-        logger.warning("daily_post_task: bot is not in the target guild.")
-        return
-
-    channel: Optional[discord.TextChannel] = None
-    if AUTO_CHANNEL_ID:
-        ch = guild.get_channel(AUTO_CHANNEL_ID)
-        if isinstance(ch, discord.TextChannel):
-            channel = ch
-    else:
-        for chan in guild.text_channels:
-            if chan.permissions_for(guild.me).send_messages:
-                channel = chan
-                break
-
-    if channel is None:
+    if not channel:
         logger.warning("daily_post_task: no writable text channel found.")
         return
 
@@ -658,7 +670,6 @@ async def on_message(message: discord.Message):
             # If correct, AWARD BONUS TO AUTHOR
             if is_correct and author_id:
                  # Give author bonus points
-                 # We record this as a special "bonus" submission so it shows up in their total score
                  submit_answer(
                     author_id, problem_id, "AUTHOR_BONUS", 1, AUTHOR_BONUS_PER_SOLVE
                  )
@@ -720,6 +731,7 @@ async def on_message(message: discord.Message):
     difficulty="Difficulty 1-5",
     topics="Comma-separated tags (e.g. game theory,probability)",
     statement="Full problem statement text",
+    editorial="Link to solution or explanation (Optional but recommended)",
     image="Optional image/diagram attachment",
 )
 async def create_problem(
@@ -729,6 +741,7 @@ async def create_problem(
     difficulty: app_commands.Range[int, 1, 5],
     topics: str,
     statement: str,
+    editorial: Optional[str] = None, # NEW ARGUMENT
     image: Optional[discord.Attachment] = None,
 ):
     """User-facing command to create a problem; limited to 1 per 24h."""
@@ -774,6 +787,7 @@ async def create_problem(
             answer=answer.strip(),
             author_id=user_id,
             image_url=image_url,
+            editorial_url=editorial # SAVE EDITORIAL
         )
 
         # Confirmation embed
@@ -785,6 +799,8 @@ async def create_problem(
         embed.add_field(name="Difficulty", value=str(difficulty), inline=True)
         embed.add_field(name="Topics", value=topics or "N/A", inline=False)
         embed.add_field(name="Answer", value=f"||{answer}||", inline=False)
+        if editorial:
+             embed.add_field(name="Editorial", value=f"||{editorial}||", inline=False)
         if image_url:
             embed.set_image(url=image_url)
 
@@ -956,11 +972,11 @@ async def view_problem(interaction: discord.Interaction, code: str):
         await interaction.followup.send(f"❌ Problem `{code}` not found.")
         return
 
-    # Unpack problem details
+    # Unpack problem details (UPDATED to include editorial_url at index 14)
     (
         problem_id, _code, statement, topics, difficulty, setter, 
         source, answer, opens_at, closes_at, is_active, created_at, 
-        author_id, image_url
+        author_id, image_url, editorial_url
     ) = prob
 
     # SECURITY CHECK: Prevent viewing unreleased problems
@@ -1004,6 +1020,8 @@ async def view_problem(interaction: discord.Interaction, code: str):
 
     if not is_active and opens_at:
          embed.set_footer(text="This problem is closed. Submissions won't earn points.")
+         # Optionally show editorial in view_problem too if closed?
+         # if editorial_url: embed.add_field(name="Editorial", value=editorial_url, inline=False)
     elif not opens_at:
          embed.set_footer(text="⚠️ PREVIEW ONLY: This problem is not public yet.")
 

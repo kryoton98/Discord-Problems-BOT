@@ -27,6 +27,8 @@ DB_NAME = "quiz_bot.db"
 
 # Role that can manually post problems if needed
 CURATOR_ROLE = "Curator"
+# Role that can preview unreleased problems
+VERIFIER_ROLE = "Verifier"
 
 # Timezone and scheduled daily post time (12:00 PM IST)
 IST = ZoneInfo("Asia/Kolkata")  # India Standard Time
@@ -909,13 +911,13 @@ async def unscore_problem(
         logger.error(f"Error in unscore_problem: {e}")
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
 
-@bot.tree.command(name="list_problems", description="List all problems")
-@app_commands.describe(page="The page number to view (1, 2, 3, etc.)")
+@bot.tree.command(name="list_problems", description="List all problems (paginated)")
+@app_commands.describe(page="Page number to view (default 1)")
 async def list_problems(interaction: discord.Interaction, page: int = 1):
-    """List all problems with basic info, paginated."""
+    """List all problems with basic info."""
     await interaction.response.defer()
 
-    PROBLEMS_PER_PAGE = 10
+    PROBLEMS_PER_PAGE = 15
     if page < 1:
         page = 1
 
@@ -951,18 +953,17 @@ async def list_problems(interaction: discord.Interaction, page: int = 1):
                 inline=False,
             )
         
-        embed.set_footer(text=f"Showing problems {start_index + 1}-{min(end_index, total_problems)} of {total_problems}. Use /view_problem <code> to see details.")
+        embed.set_footer(text=f"Showing {start_index + 1}-{min(end_index, total_problems)} of {total_problems}. Use /view_problem <code> to read.")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
         logger.error(f"Error listing problems: {e}")
         await interaction.followup.send("⚠️ An error occurred.")
 
-
 @bot.tree.command(name="view_problem", description="View a past problem statement")
 @app_commands.describe(code="Problem code to view")
 async def view_problem(interaction: discord.Interaction, code: str):
-    """Show the statement of a specific problem (past or present)."""
+    """Show the statement of a specific problem. Restricted if not yet released."""
     await interaction.response.defer()
 
     prob = get_problem_by_code(code)
@@ -977,7 +978,22 @@ async def view_problem(interaction: discord.Interaction, code: str):
         author_id, image_url
     ) = prob
 
-    # Create a nice embed
+    # SECURITY CHECK: Prevent viewing unreleased problems
+    # A problem is "unreleased" if opens_at is None.
+    if not opens_at:
+        # Check if user has Curator OR Verifier role
+        user_role_names = [role.name for role in interaction.user.roles]
+        is_staff = (CURATOR_ROLE in user_role_names) or (VERIFIER_ROLE in user_role_names)
+
+        if not is_staff:
+            await interaction.followup.send(
+                f"🔒 Problem `{code}` has not been released yet!\n"
+                "Only Curators and Verifiers can preview it.",
+                ephemeral=True
+            )
+            return
+
+    # Create the embed
     embed = discord.Embed(
         title=f"Problem {code}",
         description=statement,
@@ -992,11 +1008,19 @@ async def view_problem(interaction: discord.Interaction, code: str):
     embed.add_field(name="Setter", value=setter or "N/A", inline=True)
     
     # Show status
-    status = "🔴 Active (Submit now!)" if is_active else "⚪ Closed (Practice only)"
+    if is_active:
+        status = "🔴 Active (Submit now!)"
+    elif not opens_at:
+        status = "🔒 Unreleased (Preview Mode)"
+    else:
+        status = "⚪ Closed (Practice only)"
+        
     embed.add_field(name="Status", value=status, inline=False)
 
-    if not is_active:
+    if not is_active and opens_at:
          embed.set_footer(text="This problem is closed. Submissions won't earn points.")
+    elif not opens_at:
+         embed.set_footer(text="⚠️ PREVIEW ONLY: This problem is not public yet.")
 
     await interaction.followup.send(embed=embed)
 
@@ -1173,7 +1197,7 @@ async def curator_leaderboard(interaction: discord.Interaction):
 # ============================================================================
 
 if __name__ == "__main__":
-    logger.info(">>> STARTING Problems BOT v0.4 (Bonus + Cap) <<<")
+    logger.info(">>> STARTING Problems BOT v0.5 (Verifier+Pagination) <<<")
 
     init_db()
 

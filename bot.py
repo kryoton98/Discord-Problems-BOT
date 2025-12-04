@@ -731,7 +731,7 @@ async def on_message(message: discord.Message):
     difficulty="Difficulty 1-5",
     topics="Comma-separated tags (e.g. game theory,probability)",
     statement="Full problem statement text",
-    editorial="Link to solution or explanation (Optional but recommended)",
+    editorial="Link to solution or explanation (Compulsory)",  # Updated description
     image="Optional image/diagram attachment",
 )
 async def create_problem(
@@ -741,7 +741,7 @@ async def create_problem(
     difficulty: app_commands.Range[int, 1, 5],
     topics: str,
     statement: str,
-    editorial: Optional[str] = None, # NEW ARGUMENT
+    editorial: str,  # REMOVED Optional[], it is now required
     image: Optional[discord.Attachment] = None,
 ):
     """User-facing command to create a problem; limited to 1 per 24h."""
@@ -773,6 +773,13 @@ async def create_problem(
             "❌ Problem statement cannot be empty.", ephemeral=True
         )
         return
+        
+    # Ensure editorial is not just whitespace
+    if not editorial.strip():
+        await interaction.followup.send(
+            "❌ Editorial is compulsory! Please provide a link or explanation.", ephemeral=True
+        )
+        return
 
     image_url = image.url if image is not None else None
 
@@ -787,7 +794,7 @@ async def create_problem(
             answer=answer.strip(),
             author_id=user_id,
             image_url=image_url,
-            editorial_url=editorial # SAVE EDITORIAL
+            editorial_url=editorial.strip() # Save the required editorial
         )
 
         # Confirmation embed
@@ -799,8 +806,7 @@ async def create_problem(
         embed.add_field(name="Difficulty", value=str(difficulty), inline=True)
         embed.add_field(name="Topics", value=topics or "N/A", inline=False)
         embed.add_field(name="Answer", value=f"||{answer}||", inline=False)
-        if editorial:
-             embed.add_field(name="Editorial", value=f"||{editorial}||", inline=False)
+        embed.add_field(name="Editorial", value=f"||{editorial}||", inline=False)
         if image_url:
             embed.set_image(url=image_url)
 
@@ -817,6 +823,7 @@ async def create_problem(
     except Exception as e:
         logger.error(f"Error in create_problem: {e}")
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
+
 
 # ============================================================================
 # CURATOR COMMANDS (manual posting, listing, unscoring)

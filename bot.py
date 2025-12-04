@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
+from discord import app_commands, ui
 import sqlite3
 import os
 from datetime import datetime, timedelta, timezone, time
@@ -38,6 +38,7 @@ DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 # Fill these with your actual IDs (right-click server/channel -> "Copy ID").
 AUTO_GUILD_ID = 0       # e.g. 123456789012345678
 AUTO_CHANNEL_ID = 0     # e.g. 234567890123456789
+VERIFIER_CHANNEL_ID = 0 # e.g. 345678901234567890
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes
@@ -54,7 +55,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    # Problems table (includes author_id, image_url, and NOW editorial_url)
+    # Problems table (includes author_id, image_url, editorial_url, review_status)
     c.execute(
         """CREATE TABLE IF NOT EXISTS problems (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,13 +72,21 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         author_id TEXT,
         image_url TEXT,
-        editorial_url TEXT
+        editorial_url TEXT,
+        review_status TEXT DEFAULT 'pending'
     )"""
     )
     
     # Simple migration to add editorial_url if it doesn't exist
     try:
         c.execute("ALTER TABLE problems ADD COLUMN editorial_url TEXT")
+    except sqlite3.OperationalError:
+        # Column likely already exists
+        pass
+
+    # Simple migration to add review_status if it doesn't exist
+    try:
+        c.execute("ALTER TABLE problems ADD COLUMN review_status TEXT DEFAULT 'pending'")
     except sqlite3.OperationalError:
         # Column likely already exists
         pass
@@ -117,6 +126,25 @@ def init_db():
 # DATABASE HELPER FUNCTIONS
 # ============================================================================
 
+def approve_problem(problem_id: int):
+    """Mark a problem as approved in the review queue."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE problems SET review_status = 'approved' WHERE id = ?",
+        (problem_id,),
+    )
+    conn.commit()
+    conn.close()
+
+def reject_problem(problem_id: int):
+    """Reject a problem by deleting it (simple behaviour)."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM problems WHERE id = ?", (problem_id,))
+    conn.commit()
+    conn.close()
+
 def get_active_problem():
     """Get the currently active problem."""
     conn = sqlite3.connect(DB_NAME)
@@ -140,13 +168,13 @@ def get_latest_problem_code() -> Optional[str]:
     Next problem code for auto poster.
 
     Chooses the *oldest* problem that has never been opened yet
-    (opens_at IS NULL), so problems are used in FIFO order.
+    (opens_at IS NULL) AND is APPROVED.
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute(
         "SELECT code FROM problems "
-        "WHERE opens_at IS NULL "
+        "WHERE opens_at IS NULL AND review_status = 'approved' "
         "ORDER BY created_at ASC LIMIT 1"
     )
     row = c.fetchone()
@@ -285,16 +313,16 @@ def add_problem(
     answer: str,
     author_id: Optional[str],
     image_url: Optional[str],
-    editorial_url: Optional[str],  # NEW ARGUMENT
+    editorial_url: Optional[str],
 ) -> int:
-    """Add a new problem row."""
+    """Add a new problem row with pending status."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute(
         """INSERT INTO problems
            (code, statement, topics, difficulty, setter, source, answer,
-            author_id, image_url, editorial_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            author_id, image_url, editorial_url, review_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
         (code, statement, topics, difficulty, setter, source, answer, author_id, image_url, editorial_url),
     )
     conn.commit()
@@ -307,7 +335,7 @@ def get_all_problems():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute(
-        "SELECT id, code, difficulty, is_active FROM problems ORDER BY created_at DESC"
+        "SELECT id, code, difficulty, is_active, review_status FROM problems ORDER BY created_at DESC"
     )
     results = c.fetchall()
     conn.close()
@@ -411,6 +439,48 @@ def unscore_submissions(problem_id: int, user_id: Optional[str] = None) -> int:
 # BOT SETUP
 # ============================================================================
 
+class ReviewView(ui.View):
+    def __init__(self, problem_id: int, code: str, author_id: str):
+        super().__init__(timeout=None)
+        self.problem_id = problem_id
+        self.code = code
+        self.author_id = author_id
+
+    @ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="approve_btn")
+    async def approve(self, interaction: discord.Interaction, button: ui.Button):
+        if not any(r.name == VERIFIER_ROLE for r in interaction.user.roles):
+            await interaction.response.send_message("❌ You need the Verifier role.", ephemeral=True)
+            return
+
+        approve_problem(self.problem_id)
+        
+        await interaction.response.edit_message(
+            content=f"✅ Problem `{self.code}` **APPROVED** by {interaction.user.mention}.",
+            view=None, 
+            embed=None
+        )
+        
+        try:
+            author = await interaction.client.fetch_user(int(self.author_id))
+            if author:
+                await author.send(f"🎉 **Great news!** Your problem `{self.code}` was approved!")
+        except Exception:
+            pass
+
+    @ui.button(label="Reject", style=discord.ButtonStyle.red, custom_id="reject_btn")
+    async def reject(self, interaction: discord.Interaction, button: ui.Button):
+        if not any(r.name == VERIFIER_ROLE for r in interaction.user.roles):
+            await interaction.response.send_message("❌ You need the Verifier role.", ephemeral=True)
+            return
+
+        reject_problem(self.problem_id)
+        
+        await interaction.response.edit_message(
+            content=f"❌ Problem `{self.code}` **REJECTED** by {interaction.user.mention}.",
+            view=None, 
+            embed=None
+        )
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.dm_messages = True
@@ -447,11 +517,10 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
     # Activate problem (sets opens_at/closes_at)
     activate_problem(code)
 
-    # Note: The prob tuple now includes editorial_url at the end (index 14) due to schema change
     (
         problem_id, _code, statement, topics, difficulty, setter, 
         source, answer, opens_at, closes_at, _is_active, _created_at, 
-        author_id, image_url, _editorial_url
+        author_id, image_url, _editorial_url, _review_status
     ) = prob
 
     embed1 = discord.Embed(
@@ -500,12 +569,9 @@ async def daily_post_task():
     """Automatically post the daily problem at 12:00 PM IST."""
     await bot.wait_until_ready()
 
-    # --------------------------------------------------------------------
     # 1. POST EDITORIAL FOR PREVIOUS PROBLEM
-    # --------------------------------------------------------------------
     prev_active = get_active_problem()
     
-    # Resolve channel first
     guild = None
     if AUTO_GUILD_ID:
         guild = bot.get_guild(AUTO_GUILD_ID)
@@ -525,11 +591,9 @@ async def daily_post_task():
                     break
 
     if channel and prev_active:
-        # prev_active is likely the problem we are about to close.
-        # It has opens_at ~24h ago.
         prev_code = prev_active[1]
         prev_ans = prev_active[7]
-        prev_editorial = prev_active[14]  # Index 14 is editorial_url in our new schema
+        prev_editorial = prev_active[14]
         
         editorial_embed = discord.Embed(
             title=f"🛑 Day {prev_code} Closed", 
@@ -544,9 +608,7 @@ async def daily_post_task():
             
         await channel.send(embed=editorial_embed)
 
-    # --------------------------------------------------------------------
-    # 2. POST NEW PROBLEM (Existing Logic)
-    # --------------------------------------------------------------------
+    # 2. POST NEW PROBLEM
     code = get_latest_problem_code()
     if code is None:
         logger.warning(
@@ -742,17 +804,10 @@ async def create_problem(
     editorial: str,
     image: Optional[discord.Attachment] = None,
 ):
-    """
-    User-facing command to create a problem.
-
-    Changes from your previous version:
-    - No 24h limit.
-    - Code is auto-assigned as the smallest unused positive integer.
-    """
+    """User-facing command to create a problem; limited to 1 per 24h."""
     user_id = str(interaction.user.id)
-    await interaction.response.defer(ephemeral=True)
 
-    # --- Validation (same as before, but no rate-limit) ---
+    await interaction.response.defer(ephemeral=True)
 
     # Ensure at least some statement text
     if not statement.strip():
@@ -760,19 +815,17 @@ async def create_problem(
             "❌ Problem statement cannot be empty.", ephemeral=True
         )
         return
-
+        
     # Ensure editorial is not just whitespace
     if not editorial.strip():
         await interaction.followup.send(
-            "❌ Editorial is compulsory! Please provide a link or explanation.",
-            ephemeral=True,
+            "❌ Editorial is compulsory! Please provide a link or explanation.", ephemeral=True
         )
         return
 
     image_url = image.url if image is not None else None
 
-    # --- AUTO-ASSIGN SMALLEST AVAILABLE NUMERIC CODE ---
-
+    # AUTO-ASSIGN SMALLEST AVAILABLE NUMERIC CODE
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT code FROM problems")
@@ -782,7 +835,6 @@ async def create_problem(
         try:
             existing_codes.add(int(code_str))
         except (TypeError, ValueError):
-            # Ignore non-numeric codes if any exist
             continue
 
     conn.close()
@@ -791,9 +843,7 @@ async def create_problem(
     while candidate in existing_codes:
         candidate += 1
 
-    code = str(candidate)  # this is the assigned code
-
-    # --- Insert into DB using auto code ---
+    code = str(candidate)
 
     try:
         problem_id = add_problem(
@@ -824,20 +874,40 @@ async def create_problem(
 
         await interaction.followup.send(
             content=(
-                f"✅ Problem created with auto-assigned code **`{code}`** "
-                f"(ID: {problem_id}).\n"
-                f"It can be auto-posted at 12 PM IST by the bot, "
-                f"or manually via `/post_today {code}`."
+                f"✅ Problem `{code}` submitted! (ID: {problem_id}).\n"
+                f"It is now **Pending Review** by verifiers."
             ),
             embed=embed,
             ephemeral=True,
         )
 
+        # Send to Verifier Channel
+        if VERIFIER_CHANNEL_ID:
+            guild = interaction.guild
+            if guild:
+                review_channel = guild.get_channel(VERIFIER_CHANNEL_ID)
+            else:
+                review_channel = None
+
+            if review_channel:
+                review_embed = discord.Embed(
+                    title="🔍 New Problem Pending Review",
+                    color=discord.Color.orange(),
+                )
+                review_embed.add_field(name="Code", value=code, inline=True)
+                review_embed.add_field(name="Setter", value=interaction.user.mention, inline=True)
+                review_embed.add_field(name="Statement", value=statement[:1024], inline=False)
+                review_embed.add_field(name="Answer", value=f"||{answer}||", inline=True)
+                review_embed.add_field(name="Editorial", value=f"||{editorial}||", inline=False)
+                if image_url:
+                    review_embed.set_image(url=image_url)
+
+                view = ReviewView(problem_id, code, user_id)
+                await review_channel.send(embed=review_embed, view=view)
+
     except Exception as e:
         logger.error(f"Error in create_problem: {e}")
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
-
-
 
 # ============================================================================
 # CURATOR COMMANDS (manual posting, listing, unscoring)
@@ -993,11 +1063,11 @@ async def view_problem(interaction: discord.Interaction, code: str):
         await interaction.followup.send(f"❌ Problem `{code}` not found.")
         return
 
-    # Unpack problem details (UPDATED to include editorial_url at index 14)
+    # Unpack problem details (UPDATED to include editorial_url at index 14, review_status at 15)
     (
         problem_id, _code, statement, topics, difficulty, setter, 
         source, answer, opens_at, closes_at, is_active, created_at, 
-        author_id, image_url, editorial_url
+        author_id, image_url, editorial_url, review_status
     ) = prob
 
     # SECURITY CHECK: Prevent viewing unreleased problems

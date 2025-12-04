@@ -439,20 +439,9 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
     activate_problem(code)
 
     (
-        problem_id,
-        _code,
-        statement,
-        topics,
-        difficulty,
-        setter,
-        source,
-        answer,
-        opens_at,
-        closes_at,
-        _is_active,
-        _created_at,
-        author_id,
-        image_url,
+        problem_id, _code, statement, topics, difficulty, setter, 
+        source, answer, opens_at, closes_at, _is_active, _created_at, 
+        author_id, image_url
     ) = prob
 
     embed1 = discord.Embed(
@@ -465,19 +454,11 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
 
     embed2 = discord.Embed(title="Problem Info", color=discord.Color.dark_gray())
     embed2.add_field(name="Topics", value=topics or "N/A", inline=False)
-    embed2.add_field(
-        name="Difficulty",
-        value=str(difficulty) if difficulty else "N/A",
-        inline=True,
-    )
+    embed2.add_field(name="Difficulty", value=str(difficulty) if difficulty else "N/A", inline=True)
     embed2.add_field(name="Setter", value=setter or "N/A", inline=True)
     embed2.add_field(name="Source", value=source or "N/A", inline=False)
     if author_id:
-        embed2.add_field(
-            name="Author ID",
-            value=author_id,
-            inline=False,
-        )
+        embed2.add_field(name="Author ID", value=author_id, inline=False)
     embed2.add_field(
         name="Window",
         value=(
@@ -490,7 +471,11 @@ async def post_problem_to_channel(channel: discord.TextChannel, code: str):
         inline=False,
     )
 
-    await channel.send(embeds=[embed1, embed2])
+    # Simply use the @here string
+    content = "@here 🔔 **New Daily Problem!**"
+
+    await channel.send(content=content, embeds=[embed1, embed2])
+
 
 # ============================================================================
 # SCHEDULED DAILY TASK (12:00 PM IST)

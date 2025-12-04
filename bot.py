@@ -26,7 +26,7 @@ except Exception:
 DB_NAME = "quiz_bot.db"
 
 # Role that can manually post problems if needed
-CURATOR_ROLE = "Curator"
+CURATOR_ROLE = "Verifier"
 # Role that can preview unreleased problems
 VERIFIER_ROLE = "Verifier"
 
@@ -36,9 +36,9 @@ DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 
 # Where the automatic daily post goes.
 # Fill these with your actual IDs (right-click server/channel -> "Copy ID").
-AUTO_GUILD_ID = 0       # e.g. 123456789012345678
-AUTO_CHANNEL_ID = 0     # e.g. 234567890123456789
-VERIFIER_CHANNEL_ID = 0 # e.g. 345678901234567890
+AUTO_GUILD_ID = 1445724251964309576      # e.g. 123456789012345678
+AUTO_CHANNEL_ID = 1446097787816247346    # e.g. 234567890123456789
+VERIFIER_CHANNEL_ID = 1446098040715743263# e.g. 345678901234567890
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes
@@ -148,10 +148,45 @@ def approve_problem(problem_id: int):
     conn.close()
 
 def reject_problem(problem_id: int):
-    """Reject a problem by deleting it (simple behaviour)."""
+    """Reject a problem and shift subsequent codes down to fill the gap."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    
+    # 1. Get the code of the problem we are about to delete
+    c.execute("SELECT code FROM problems WHERE id = ?", (problem_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return
+        
+    deleted_code_str = row[0]
+    
+    try:
+        deleted_code = int(deleted_code_str)
+    except ValueError:
+        # If code is not a number (e.g. "TEST"), just delete it and exit
+        c.execute("DELETE FROM problems WHERE id = ?", (problem_id,))
+        conn.commit()
+        conn.close()
+        return
+
+    # 2. Delete the problem
     c.execute("DELETE FROM problems WHERE id = ?", (problem_id,))
+    
+    # 3. Shift down all problems with code > deleted_code
+    #    e.g. if we delete 3, then 4 becomes 3, 5 becomes 4...
+    c.execute("SELECT id, code FROM problems")
+    all_probs = c.fetchall()
+    
+    for pid, pcode in all_probs:
+        try:
+            pcode_int = int(pcode)
+            if pcode_int > deleted_code:
+                new_code = str(pcode_int - 1)
+                c.execute("UPDATE problems SET code = ? WHERE id = ?", (new_code, pid))
+        except ValueError:
+            continue
+
     conn.commit()
     conn.close()
 
@@ -761,6 +796,18 @@ async def on_message(message: discord.Message):
     # Only process DMs (guild is None)
     if message.guild is None:
         try:
+            # 1. CHECK IF USER IS A VERIFIER
+            # Since this is a DM, we must fetch the user from the main guild to see their roles.
+            if AUTO_GUILD_ID:
+                guild = bot.get_guild(AUTO_GUILD_ID)
+                if guild:
+                    member = guild.get_member(message.author.id)
+                    # If member is found and has the Verifier role
+                    if member and any(r.name == VERIFIER_ROLE for r in member.roles):
+                        await message.author.send("🚫 **Verifiers cannot solve problems for points.**")
+                        return
+            
+            # 2. NORMAL SOLVING LOGIC
             parts = message.content.strip().split(maxsplit=1)
             if len(parts) != 2:
                 await message.author.send(
@@ -781,7 +828,6 @@ async def on_message(message: discord.Message):
                 return
 
             problem_id = prob[0]
-
             # 12 is the index for author_id in your DB schema
             author_id = prob[12]
 
@@ -1032,7 +1078,7 @@ async def create_problem(
 # COMMANDS
 # ============================================================================
 
-@bot.tree.command(name="post_today", description="Post today's problem (Curator only)")
+@bot.tree.command(name="post_today", description="Post today's problem (Verifier only)")
 @app_commands.describe(code="Problem code (e.g., 2089)")
 async def post_today(interaction: discord.Interaction, code: str):
     """Manually post the daily problem into the current channel."""
@@ -1063,7 +1109,7 @@ async def post_today(interaction: discord.Interaction, code: str):
         await interaction.response.send_message("⚠️ An error occurred.", ephemeral=True)
 
 @bot.tree.command(
-    name="unscore_problem", description="Remove scores for a problem (Curator only)"
+    name="unscore_problem", description="Remove scores for a problem (Verifier only)"
 )
 @app_commands.describe(
     code="Problem code (e.g., 2089)",
@@ -1156,7 +1202,7 @@ async def list_problems(interaction: discord.Interaction, page: int = 1):
             color=discord.Color.blue()
         )
 
-        for prob_id, code, difficulty, is_active in problems_for_page:
+        for prob_id, code, difficulty, is_active, review_status in problems_for_page:
             status = "🔴 Active" if is_active else "⚪ Inactive"
             embed.add_field(
                 name=f"{code}",
@@ -1171,71 +1217,65 @@ async def list_problems(interaction: discord.Interaction, page: int = 1):
         logger.error(f"Error listing problems: {e}")
         await interaction.followup.send("⚠️ An error occurred.")
 
-@bot.tree.command(name="view_problem", description="View a past problem statement")
+@bot.tree.command(name="view_problem", description="View problem details")
 @app_commands.describe(code="Problem code to view")
 async def view_problem(interaction: discord.Interaction, code: str):
-    """Show the statement of a specific problem. Restricted if not yet released."""
-    await interaction.response.defer()
-
+    # 1. Check if user is verifier
+    is_verifier = any(role.name == VERIFIER_ROLE for role in interaction.user.roles)
+    
+    # 2. Determine ephemeral status BEFORE deferring
+    # (Safe bet: make it ephemeral if user is Verifier OR if we don't know yet)
+    # Actually, let's query DB first to know if it's released.
+    # We can't query DB before deferring if DB is slow, but usually it's fast enough.
+    
     prob = get_problem_by_code(code)
+    
     if not prob:
-        await interaction.followup.send(f"❌ Problem `{code}` not found.")
+        await interaction.response.send_message("❌ Not found.", ephemeral=True)
         return
 
-    # Unpack problem details (UPDATED to include editorial_url at index 14, review_status at 15)
-    (
-        problem_id, _code, statement, topics, difficulty, setter, 
-        source, answer, opens_at, closes_at, is_active, created_at, 
-        author_id, image_url, editorial_url, review_status
-    ) = prob
-
-    # SECURITY CHECK: Prevent viewing unreleased problems
-    # A problem is "unreleased" if opens_at is None.
-    if not opens_at:
-        # Check if user has Curator OR Verifier role
-        user_role_names = [role.name for role in interaction.user.roles]
-        is_staff = (CURATOR_ROLE in user_role_names) or (VERIFIER_ROLE in user_role_names)
-
-        if not is_staff:
-            await interaction.followup.send(
-                f"🔒 Problem `{code}` has not been released yet!\n"
-                "Only Curators and Verifiers can preview it.",
-                ephemeral=True
-            )
-            return
-
-    # Create the embed
-    embed = discord.Embed(
-        title=f"Problem {code}",
-        description=statement,
-        color=discord.Color.light_gray()
-    )
+    # Unpack details
+    (pid, _code, statement, topics, diff, setter, src, ans, op_at, cl_at, active, created, auth, img, edit, rev) = prob
     
-    if image_url:
-        embed.set_image(url=image_url)
+    # 3. Access Control Logic
+    is_released = (op_at is not None)
+    
+    if not is_released and not is_verifier:
+        await interaction.response.send_message("🔒 This problem is not yet released.", ephemeral=True)
+        return
 
+    # 4. Visibility Logic
+    # If Verifier looking at unreleased -> Ephemeral (Secret)
+    # If Verifier looking at released -> Ephemeral (Optional, but cleaner)
+    # If User looking at released -> Public (or Ephemeral if you prefer)
+    
+    # Your preference seemed to be "Show only for you" (Ephemeral)
+    await interaction.response.defer(ephemeral=True)
+    
+    # 5. Build Embed
+    # Color: Green if active, Red if closed, Orange if unreleased
+    color = discord.Color.green() if active else (discord.Color.red() if is_released else discord.Color.orange())
+    
+    embed = discord.Embed(title=f"Problem {code}", description=statement, color=color)
+    if img: embed.set_image(url=img)
+    
     embed.add_field(name="Topics", value=topics or "N/A", inline=False)
-    embed.add_field(name="Difficulty", value=str(difficulty) if difficulty else "N/A", inline=True)
+    embed.add_field(name="Difficulty", value=str(diff) if diff else "N/A", inline=True)
     embed.add_field(name="Setter", value=setter or "N/A", inline=True)
     
-    # Show status
-    if is_active:
-        status = "🔴 Active (Submit now!)"
-    elif not opens_at:
-        status = "🔒 Unreleased (Preview Mode)"
-    else:
-        status = "⚪ Closed (Practice only)"
-        
-    embed.add_field(name="Status", value=status, inline=False)
+    status_text = "🔴 Active" if active else ("⚪ Closed" if is_released else "⏳ Unreleased")
+    embed.add_field(name="Status", value=status_text, inline=False)
 
-    if not is_active and opens_at:
-         embed.set_footer(text="This problem is closed. Submissions won't earn points.")
-         # Optionally show editorial in view_problem too if closed?
-         # if editorial_url: embed.add_field(name="Editorial", value=editorial_url, inline=False)
-    elif not opens_at:
-         embed.set_footer(text="⚠️ PREVIEW ONLY: This problem is not public yet.")
+    # 6. Sensitive Info (Answer/Editorial) - ONLY for Verifiers
+    if is_verifier:
+        embed.add_field(name="[Verifier] Answer", value=f"||{ans}||", inline=False)
+        if edit: embed.add_field(name="[Verifier] Editorial", value=f"||{edit}||", inline=False)
+        embed.set_footer(text="Verifier View (Visible only to you)")
+    else:
+        embed.set_footer(text="Visible only to you.")
 
     await interaction.followup.send(embed=embed)
+
 
 # ============================================================================
 # SOLVER LEADERBOARD COMMANDS

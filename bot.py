@@ -36,9 +36,9 @@ DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 
 # Where the automatic daily post goes.
 # Fill these with your actual IDs (right-click server/channel -> "Copy ID").
-AUTO_GUILD_ID = 1445724251964309576      # e.g. 123456789012345678
-AUTO_CHANNEL_ID = 1446097787816247346    # e.g. 234567890123456789
-VERIFIER_CHANNEL_ID = 1446098040715743263# e.g. 345678901234567890
+AUTO_GUILD_ID =     # e.g. 123456789012345678
+AUTO_CHANNEL_ID =   # e.g. 234567890123456789
+VERIFIER_CHANNEL_ID = # e.g. 345678901234567890
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes

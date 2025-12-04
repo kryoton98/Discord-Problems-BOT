@@ -723,49 +723,36 @@ async def on_message(message: discord.Message):
 # ============================================================================
 
 @bot.tree.command(
-    name="create_problem", description="Create a new puzzle/problem (1 per 24h)"
+    name="create_problem", description="Create a new puzzle/problem"
 )
 @app_commands.describe(
-    code="Short code like 2089",
     answer="Official answer string (what solvers must DM)",
     difficulty="Difficulty 1-5",
     topics="Comma-separated tags (e.g. game theory,probability)",
     statement="Full problem statement text",
-    editorial="Link to solution or explanation (Compulsory)",  # Updated description
+    editorial="Link to solution or explanation (Compulsory)",
     image="Optional image/diagram attachment",
 )
 async def create_problem(
     interaction: discord.Interaction,
-    code: str,
     answer: str,
     difficulty: app_commands.Range[int, 1, 5],
     topics: str,
     statement: str,
-    editorial: str,  # REMOVED Optional[], it is now required
+    editorial: str,
     image: Optional[discord.Attachment] = None,
 ):
-    """User-facing command to create a problem; limited to 1 per 24h."""
-    user_id = str(interaction.user.id)
+    """
+    User-facing command to create a problem.
 
+    Changes from your previous version:
+    - No 24h limit.
+    - Code is auto-assigned as the smallest unused positive integer.
+    """
+    user_id = str(interaction.user.id)
     await interaction.response.defer(ephemeral=True)
 
-    # Enforce 1 problem per 24 hours
-    recent = user_recent_problem_count(user_id, hours=24)
-    if recent >= 1:
-        await interaction.followup.send(
-            "❌ You have already created a problem in the last 24 hours.\n"
-            "Please wait before creating another.",
-            ephemeral=True,
-        )
-        return
-
-    # Validate unique code
-    if get_problem_by_code(code) is not None:
-        await interaction.followup.send(
-            f"❌ Problem code `{code}` is already in use. Choose another.",
-            ephemeral=True,
-        )
-        return
+    # --- Validation (same as before, but no rate-limit) ---
 
     # Ensure at least some statement text
     if not statement.strip():
@@ -773,15 +760,40 @@ async def create_problem(
             "❌ Problem statement cannot be empty.", ephemeral=True
         )
         return
-        
+
     # Ensure editorial is not just whitespace
     if not editorial.strip():
         await interaction.followup.send(
-            "❌ Editorial is compulsory! Please provide a link or explanation.", ephemeral=True
+            "❌ Editorial is compulsory! Please provide a link or explanation.",
+            ephemeral=True,
         )
         return
 
     image_url = image.url if image is not None else None
+
+    # --- AUTO-ASSIGN SMALLEST AVAILABLE NUMERIC CODE ---
+
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT code FROM problems")
+    existing_codes = set()
+
+    for (code_str,) in c.fetchall():
+        try:
+            existing_codes.add(int(code_str))
+        except (TypeError, ValueError):
+            # Ignore non-numeric codes if any exist
+            continue
+
+    conn.close()
+
+    candidate = 1
+    while candidate in existing_codes:
+        candidate += 1
+
+    code = str(candidate)  # this is the assigned code
+
+    # --- Insert into DB using auto code ---
 
     try:
         problem_id = add_problem(
@@ -794,7 +806,7 @@ async def create_problem(
             answer=answer.strip(),
             author_id=user_id,
             image_url=image_url,
-            editorial_url=editorial.strip() # Save the required editorial
+            editorial_url=editorial.strip(),
         )
 
         # Confirmation embed
@@ -812,9 +824,10 @@ async def create_problem(
 
         await interaction.followup.send(
             content=(
-                f"✅ Problem `{code}` created (ID: {problem_id}).\n"
+                f"✅ Problem created with auto-assigned code **`{code}`** "
+                f"(ID: {problem_id}).\n"
                 f"It can be auto-posted at 12 PM IST by the bot, "
-                f"or manually via `/post_today {code}` if you like."
+                f"or manually via `/post_today {code}`."
             ),
             embed=embed,
             ephemeral=True,
@@ -823,6 +836,7 @@ async def create_problem(
     except Exception as e:
         logger.error(f"Error in create_problem: {e}")
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
+
 
 
 # ============================================================================

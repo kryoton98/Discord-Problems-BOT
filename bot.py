@@ -36,9 +36,9 @@ DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 
 # Where the automatic daily post goes.
 # Fill these with your actual IDs (right-click server/channel -> "Copy ID").
-AUTO_GUILD_ID =     # e.g. 123456789012345678
-AUTO_CHANNEL_ID =   # e.g. 234567890123456789
-VERIFIER_CHANNEL_ID = # e.g. 345678901234567890
+AUTO_GUILD_ID = 0     # e.g. 123456789012345678
+AUTO_CHANNEL_ID = 0    # e.g. 234567890123456789
+VERIFIER_CHANNEL_ID = 0  # e.g. 345678901234567890 
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes
@@ -1167,6 +1167,46 @@ async def unscore_problem(
     except Exception as e:
         logger.error(f"Error in unscore_problem: {e}")
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
+
+@bot.tree.command(name="grant_points", description="Manually add/remove points (Verifier Only)")
+@app_commands.describe(user="User to modify", points="Points to add (negative to remove)", reason="Reason for adjustment")
+async def grant_points(interaction: discord.Interaction, user: discord.User, points: int, reason: str):
+    # Check Verifier Role
+    if not any(r.name == VERIFIER_ROLE for r in interaction.user.roles):
+        await interaction.response.send_message("❌ Verifier only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # We need a valid problem_id for the foreign key constraint.
+    # We will use the most recent problem ID, or 1.
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Find any valid problem ID to attach this "bonus" to
+    c.execute("SELECT id FROM problems LIMIT 1")
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        await interaction.followup.send("❌ No problems exist in DB yet. Create a problem first to attach points to.")
+        return
+        
+    problem_id = row[0]
+    
+    # Insert the manual adjustment
+    # We use "MANUAL: <reason>" as the answer string so we can identify it later
+    c.execute(
+        """INSERT INTO submissions (user_id, problem_id, answer, is_correct, points, submitted_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        (str(user.id), problem_id, f"MANUAL: {reason}", 1, points)
+    )
+    conn.commit()
+    conn.close()
+
+    action = "Added" if points > 0 else "Removed"
+    await interaction.followup.send(f"✅ **{action} {abs(points)} points** to {user.mention}.\nReason: {reason}")
+
 
 @bot.tree.command(name="list_problems", description="List all problems (paginated)")
 @app_commands.describe(page="Page number to view (default 1)")

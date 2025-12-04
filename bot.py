@@ -527,6 +527,36 @@ def get_user_stats(user_id: str):
 # BOT SETUP
 # ============================================================================
 
+class RejectModal(ui.Modal, title="Reject Problem"):
+    reason = ui.TextInput(label="Reason for Rejection", style=discord.TextStyle.paragraph, required=True)
+
+    def __init__(self, problem_id: int, code: str, author_id: str, original_message: discord.Message):
+        super().__init__()
+        self.problem_id = problem_id
+        self.code = code
+        self.author_id = author_id
+        self.original_message = original_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # 1. Delete from DB
+        reject_problem(self.problem_id)
+
+        # 2. Notify Author
+        try:
+            u = await interaction.client.fetch_user(int(self.author_id))
+            await u.send(f"❌ Your problem `{self.code}` was rejected.\n**Reason:** {self.reason.value}")
+        except: pass
+
+        # 3. Update the review message
+        await self.original_message.edit(
+            content=f"❌ `{self.code}` **REJECTED** by {interaction.user.mention}.\n**Reason:** {self.reason.value}",
+            view=None, embed=None
+        )
+
+        # 4. Acknowledge modal interaction
+        await interaction.response.send_message("Reason sent and problem rejected.", ephemeral=True)
+
+
 class ReviewView(ui.View):
     def __init__(self, problem_id: int, code: str, author_id: str):
         super().__init__(timeout=None)
@@ -561,12 +591,9 @@ class ReviewView(ui.View):
             await interaction.response.send_message("❌ You need the Verifier role.", ephemeral=True)
             return
 
-        reject_problem(self.problem_id)
-        
-        await interaction.response.edit_message(
-            content=f"❌ Problem `{self.code}` **REJECTED** by {interaction.user.mention}.",
-            view=None, 
-            embed=None
+        # Open the Modal instead of immediate reject
+        await interaction.response.send_modal(
+            RejectModal(self.problem_id, self.code, self.author_id, interaction.message)
         )
 
 intents = discord.Intents.default()

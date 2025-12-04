@@ -930,12 +930,54 @@ async def list_problems(interaction: discord.Interaction):
                 value=f"Difficulty: {difficulty or 'N/A'} | {status}",
                 inline=False,
             )
-
+        
+        embed.set_footer(text="Use /view_problem <code> to see the full statement.")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
         logger.error(f"Error listing problems: {e}")
         await interaction.followup.send("⚠️ An error occurred.")
+
+@bot.tree.command(name="view_problem", description="View a past problem statement")
+@app_commands.describe(code="Problem code to view")
+async def view_problem(interaction: discord.Interaction, code: str):
+    """Show the statement of a specific problem (past or present)."""
+    await interaction.response.defer()
+
+    prob = get_problem_by_code(code)
+    if not prob:
+        await interaction.followup.send(f"❌ Problem `{code}` not found.")
+        return
+
+    # Unpack problem details
+    (
+        problem_id, _code, statement, topics, difficulty, setter, 
+        source, answer, opens_at, closes_at, is_active, created_at, 
+        author_id, image_url
+    ) = prob
+
+    # Create a nice embed
+    embed = discord.Embed(
+        title=f"Problem {code}",
+        description=statement,
+        color=discord.Color.light_gray()
+    )
+    
+    if image_url:
+        embed.set_image(url=image_url)
+
+    embed.add_field(name="Topics", value=topics or "N/A", inline=False)
+    embed.add_field(name="Difficulty", value=str(difficulty) if difficulty else "N/A", inline=True)
+    embed.add_field(name="Setter", value=setter or "N/A", inline=True)
+    
+    # Show status
+    status = "🔴 Active (Submit now!)" if is_active else "⚪ Closed (Practice only)"
+    embed.add_field(name="Status", value=status, inline=False)
+
+    if not is_active:
+         embed.set_footer(text="This problem is closed. Submissions won't earn points.")
+
+    await interaction.followup.send(embed=embed)
 
 # ============================================================================
 # SOLVER LEADERBOARD COMMANDS
@@ -1110,7 +1152,7 @@ async def curator_leaderboard(interaction: discord.Interaction):
 # ============================================================================
 
 if __name__ == "__main__":
-    logger.info(">>> STARTING Problems BOT v0.3 (with unscore_problem) <<<")
+    logger.info(">>> STARTING Problems BOT v0.4 (Bonus + Cap) <<<")
 
     init_db()
 

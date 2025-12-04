@@ -910,20 +910,40 @@ async def unscore_problem(
         await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
 
 @bot.tree.command(name="list_problems", description="List all problems")
-async def list_problems(interaction: discord.Interaction):
-    """List all problems with basic info."""
+@app_commands.describe(page="The page number to view (1, 2, 3, etc.)")
+async def list_problems(interaction: discord.Interaction, page: int = 1):
+    """List all problems with basic info, paginated."""
     await interaction.response.defer()
 
-    try:
-        problems = get_all_problems()
+    PROBLEMS_PER_PAGE = 10
+    if page < 1:
+        page = 1
 
-        if not problems:
+    try:
+        all_problems = get_all_problems()
+
+        if not all_problems:
             await interaction.followup.send("📭 No problems found.")
             return
 
-        embed = discord.Embed(title="All Problems", color=discord.Color.blue())
+        total_problems = len(all_problems)
+        total_pages = (total_problems // PROBLEMS_PER_PAGE) + (1 if total_problems % PROBLEMS_PER_PAGE > 0 else 0)
 
-        for prob_id, code, difficulty, is_active in problems:
+        if page > total_pages:
+            await interaction.followup.send(f"❌ Invalid page. There are only {total_pages} pages.")
+            return
+
+        # Get the slice of problems for the current page
+        start_index = (page - 1) * PROBLEMS_PER_PAGE
+        end_index = start_index + PROBLEMS_PER_PAGE
+        problems_for_page = all_problems[start_index:end_index]
+
+        embed = discord.Embed(
+            title=f"All Problems (Page {page}/{total_pages})",
+            color=discord.Color.blue()
+        )
+
+        for prob_id, code, difficulty, is_active in problems_for_page:
             status = "🔴 Active" if is_active else "⚪ Inactive"
             embed.add_field(
                 name=f"{code}",
@@ -931,12 +951,13 @@ async def list_problems(interaction: discord.Interaction):
                 inline=False,
             )
         
-        embed.set_footer(text="Use /view_problem <code> to see the full statement.")
+        embed.set_footer(text=f"Showing problems {start_index + 1}-{min(end_index, total_problems)} of {total_problems}. Use /view_problem <code> to see details.")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
         logger.error(f"Error listing problems: {e}")
         await interaction.followup.send("⚠️ An error occurred.")
+
 
 @bot.tree.command(name="view_problem", description="View a past problem statement")
 @app_commands.describe(code="Problem code to view")

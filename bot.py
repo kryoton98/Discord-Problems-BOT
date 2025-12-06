@@ -39,6 +39,7 @@ DAILY_POST_TIME = time(hour=12, minute=0, tzinfo=IST)
 AUTO_GUILD_ID = 0     # e.g. 123456789012345678
 AUTO_CHANNEL_ID = 0    # e.g. 234567890123456789
 VERIFIER_CHANNEL_ID = 0  # e.g. 345678901234567890 
+ASSET_CHANNEL_ID = 0    # e.g. 456789012345678901
 
 BASE_POINTS = 1000               # starting points for a problem
 DECAY_INTERVAL_SECONDS = 120     # 1 point lost every 2 minutes
@@ -140,6 +141,22 @@ def init_db():
 # ============================================================================
 # DATABASE HELPER FUNCTIONS
 # ============================================================================
+async def save_attachment_permanently(attachment: discord.Attachment, bot: commands.Bot) -> Optional[str]:
+    """Re-upload an attachment to a permanent asset channel and return its CDN URL."""
+    if ASSET_CHANNEL_ID == 0:
+        return None
+
+    for guild in bot.guilds:
+        channel = guild.get_channel(ASSET_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            file = await attachment.to_file()
+            msg = await channel.send(file=file)
+            if msg.attachments:
+                return msg.attachments[0].url
+            break
+
+    return None
+
 
 def approve_problem(problem_id: int):
     """Mark a problem as approved in the review queue."""
@@ -951,11 +968,12 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # ============================================================================
-# PROBLEM CREATION (any user, 1 per 24h)
+# PROBLEM CREATION (any user)
 # ============================================================================
 
 @bot.tree.command(
-    name="create_problem", description="Create a new puzzle/problem"
+    name="create_problem",
+    description="Create a new puzzle/problem"
 )
 @app_commands.describe(
     answer="Official answer string (what solvers must DM)",
@@ -974,48 +992,47 @@ async def create_problem(
     editorial: str,
     image: Optional[discord.Attachment] = None,
 ):
-    """User-facing command to create a problem; limited to 1 per 24h."""
+    """User-facing command to create a problem."""
     user_id = str(interaction.user.id)
 
     await interaction.response.defer(ephemeral=True)
 
-    # Ensure at least some statement text
+    # Basic validation
     if not statement.strip():
-        await interaction.followup.send(
-            "❌ Problem statement cannot be empty.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Problem statement cannot be empty.", ephemeral=True)
         return
-        
-    # Ensure editorial is not just whitespace
+
     if not editorial.strip():
         await interaction.followup.send(
-            "❌ Editorial is compulsory! Please provide a link or explanation.", ephemeral=True
+            "❌ Editorial is compulsory. Please provide a link or explanation.",
+            ephemeral=True
         )
         return
 
-    image_url = image.url if image is not None else None
-
-    # AUTO-ASSIGN SMALLEST AVAILABLE NUMERIC CODE
+    # Compute next available numeric code
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT code FROM problems")
     existing_codes = set()
-
     for (code_str,) in c.fetchall():
         try:
             existing_codes.add(int(code_str))
         except (TypeError, ValueError):
             continue
-
     conn.close()
 
     candidate = 1
     while candidate in existing_codes:
         candidate += 1
-
     code = str(candidate)
 
+    # Handle image: upload to permanent asset channel if provided
+    image_url = None
+    if image is not None:
+        image_url = await save_attachment_permanently(image, bot)
+
     try:
+        # Insert into DB
         problem_id = add_problem(
             code=code,
             statement=statement,
@@ -1029,7 +1046,7 @@ async def create_problem(
             editorial_url=editorial.strip(),
         )
 
-        # Confirmation embed
+        # Confirmation embed to the author
         embed = discord.Embed(
             title=f"Problem {code} created",
             description=statement,
@@ -1051,17 +1068,14 @@ async def create_problem(
             ephemeral=True,
         )
 
-        # Send to Verifier Channel
+        # Send to verifier review channel
         if VERIFIER_CHANNEL_ID:
             guild = interaction.guild
-            if guild:
-                review_channel = guild.get_channel(VERIFIER_CHANNEL_ID)
-            else:
-                review_channel = None
+            review_channel = guild.get_channel(VERIFIER_CHANNEL_ID) if guild else None
 
             if review_channel:
                 review_embed = discord.Embed(
-                    title="🔍 New Problem Pending Review",
+                    title="New Problem Pending Review",
                     color=discord.Color.orange(),
                 )
                 review_embed.add_field(name="Code", value=code, inline=True)
@@ -1077,8 +1091,8 @@ async def create_problem(
 
     except Exception as e:
         logger.error(f"Error in create_problem: {e}")
-        await interaction.followup.send("⚠️ An error occurred.", ephemeral=True)
-
+        await interaction.followup.send("⚠️ An error occurred while creating the problem.", ephemeral=True)
+        
 # ============================================================================
 # COMMANDS
 # ============================================================================
